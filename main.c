@@ -102,6 +102,11 @@ static int checkBootloaderHeader(uint8 *buf, unsigned readSize,
                 printf("  launch address: 0x%x\n",
                         read32LE(buf + launchAddrOffset));
                 printf("  signature:      OK\n");
+            }else{
+                if( !fixSize && size != readSize - headerSize ) {
+                    printf("warning: wrong load size in header: %u, real: %u\n",
+                            size, readSize - headerSize);
+                }
             }
             res = 1;
         }else{
