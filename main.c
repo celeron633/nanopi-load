@@ -10,7 +10,7 @@
 typedef unsigned char uint8;
 typedef unsigned int  uint32;
 
-static unsigned char mem[10 * 1024 * 1024];
+static unsigned char mem[50 * 1024 * 1024];
 
 static void write32LE(uint8 *addr, uint32 data)
 {
@@ -155,7 +155,7 @@ static int usbBoot(uint8 *buf, int size, int isVerbose)
 	libusb_device_handle  *dev_handle;
 
 	int ret, boot_ret = 1;
-	int transferred;
+	int transferred, remain;
 
 	ret = libusb_init(&ctx);
 	if(ret < 0) {
@@ -167,17 +167,18 @@ static int usbBoot(uint8 *buf, int size, int isVerbose)
         if((ret = libusb_claim_interface(dev_handle, S5P6818_INTERFACE)) == 0) {
             if( isVerbose )
                 printf("Start transfer, size=%d\n", size);
-            ret = libusb_bulk_transfer(dev_handle, S5P6818_EP_OUT, buf,
-                    size, &transferred, 0);
+            remain = size;
+            while( remain > 0 ) {
+                ret = libusb_bulk_transfer(dev_handle, S5P6818_EP_OUT, buf,
+                        remain > 1048576 ? 1048576 : remain, &transferred, 0);
+                if( ret < 0 )
+                    break;
+                buf += transferred;
+                remain -= transferred;
+            }
             if (ret >= 0) {
                 if( isVerbose )
-                    printf("Finish transfer, transferred=%d\n", transferred);
-                if (size == transferred) {
-                    if( isVerbose )
-                        printf("OK\n");
-                }else
-                    fprintf(stderr, "short load: size=%d, transferred=%d\n",
-                            size, transferred);
+                    printf("Finish transfer, transferred=%d\n", size);
                 boot_ret = 0;
             }else{
                 fprintf(stderr, "libusb_bulk_transfer: %s\n",
