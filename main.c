@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <libusb.h>
 #include <errno.h>
+#include <unistd.h>
 #include "s5p_usb.h"
 #include "s5p_boot.h"
 
@@ -197,10 +198,37 @@ static int usbBoot(uint8 *buf, int size, int isVerbose)
     return boot_ret;
 }
 
+static int outTofile(const char *fname, const unsigned char *data, unsigned size)
+{
+    FILE *fp;
+    int wr;
+
+    if( !strcmp(fname, "-") )
+        fp = stdout;
+    else{
+        fp = fopen(fname, "w");
+        if( fp == NULL ) {
+            perror(fname);
+            return 1;
+        }
+    }
+    while( size ) {
+        if( (wr = fwrite(data, 1, size, fp)) < 0 ) {
+            perror("fwrite");
+            break;
+        }
+        data += wr;
+        size -= wr;
+    }
+    if( fp != stdout )
+        fclose(fp);
+    return size == 0;
+}
+
 static void usage(void)
 {
     printf("\n"
-"usage: nanopi-load [-Acfhivx] <bootloader.bin> [<loadaddr> [<startaddr>]]\n"
+"usage: nanopi-load [options...] <bootloader.bin> [<loadaddr> [<startaddr>]]\n"
 "\n"
 "options:\n"
 "  -A - Boot Header format for Samsung ARTIK boot loader\n"
@@ -208,6 +236,7 @@ static void usage(void)
 "  -f - fix load size in Boot Header\n"
 "  -h - print this help\n"
 "  -i - embed Boot Header in first 512 bytes read\n"
+"  -o <file> - output result to file instead of upload\n"
 "  -v - be verbose\n"
 "  -x - add code for iROMBOOT to Boot Header that switches to 64-bit\n"
 "\n"
@@ -217,21 +246,21 @@ static void usage(void)
     "\n");
 }
 
-int main(int argc, const char *argv[])
+int main(int argc, char *argv[])
 {
-	int offset, size, argBin = 1;
+	int offset, size, opt;
     int is64bitBoot = 0, isInPlace = 0, dryRun = 0, isVerbose = 0, fixSize = 0;
     int isArtik = 0;
 	unsigned int load_addr;
 	unsigned int launch_addr;
+    const char *infile = NULL, *outfile = NULL;
 
     if( argc == 1 ) {
         usage();
         return 0;
     }
-    while( argBin < argc && argv[argBin][0] == '-' && argv[argBin][1] ) {
-        for(int i = 1; argv[argBin][i]; ++i) {
-            switch( argv[argBin][i] ) {
+    while( (opt = getopt(argc, argv, "Acfhio:vx")) > 0 ) {
+        switch( opt ) {
             case 'A':
                 isArtik = 1;
                 break;
@@ -248,29 +277,30 @@ int main(int argc, const char *argv[])
             case 'i':
                 isInPlace = 1;
                 break;
+            case 'o':
+                outfile = optarg;
+                break;
             case 'v':
                 isVerbose = 1;
                 break;
             case 'x':
                 is64bitBoot = 1;
                 break;
-            default:
-                printf("error: unrecognized option -%c\n", argv[argBin][i]);
+            case '?':
                 return 1;
-            }
         }
-        ++argBin;
     }
-    if( argc == argBin ) {
+    if( argc == optind ) {
         printf("error: input file not provided\n");
         return 1;
     }
-    if( argc == argBin + 1 )
+    infile = argv[optind++];
+    if( argc == optind )
         offset = 0;
     else
         offset = isArtik ? 0x400 : 0x200;
     if( isInPlace ) {
-        size = readBin(mem, sizeof(mem), argv[argBin]);
+        size = readBin(mem, sizeof(mem), argv[optind]);
         if( size < 0 )
             return 1;
         if( size < offset ) {
@@ -280,15 +310,15 @@ int main(int argc, const char *argv[])
         size -= offset;
     }else{
         memset(mem, 0, offset);
-        size = readBin(mem + offset, sizeof(mem) - offset, argv[argBin]);
+        size = readBin(mem + offset, sizeof(mem) - offset, infile);
         if( size < 0 )
             return 1;
     }
-    if( argc > argBin + 1 ) {
-        load_addr = strtoul(argv[argBin+1], NULL, 16);
+    if( argc > optind ) {
+        load_addr = strtoul(argv[optind++], NULL, 16);
         launch_addr = load_addr + offset;
-        if( argc > argBin + 2 )
-            launch_addr = strtoul(argv[argBin + 2], NULL, 16);
+        if( argc > optind )
+            launch_addr = strtoul(argv[optind], NULL, 16);
         initBootloaderHeader(mem, is64bitBoot, isArtik, size,
                 load_addr, launch_addr);
         if( isVerbose ) {
@@ -302,6 +332,11 @@ int main(int argc, const char *argv[])
         if( ! checkBootloaderHeader(mem, size, isArtik, isVerbose, fixSize) )
             return 1;
     }
-	return dryRun ? 0 : usbBoot(mem, size, isVerbose);
+    if( dryRun )
+        return 0;
+    if( outfile ) {
+        return outTofile(outfile, mem, size);
+    }
+    return usbBoot(mem, size, isVerbose);
 }
 
