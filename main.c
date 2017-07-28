@@ -27,7 +27,8 @@ static unsigned read32LE(const uint8 *addr)
 }
 
 static void initBootloaderHeader(uint8 *buf, int is64bitBoot,
-        int isArtik, unsigned size, unsigned loadAddr, unsigned launchAddr)
+        int isArtik, unsigned size, unsigned loadAddr, unsigned launchAddr,
+		int bootMethod)
 {
     static const unsigned arm64bootcode[15] = {
         0xE59F0030, // ldr r0, =0xc0011000
@@ -62,13 +63,18 @@ static void initBootloaderHeader(uint8 *buf, int is64bitBoot,
         write32LE(buf + 0x44, size);        // load size
         write32LE(buf + 0x48, loadAddr);    // load address
         write32LE(buf + 0x4c, launchAddr);  // launch address
+		if( bootMethod >= 0 )
+			buf[0x57] = bootMethod;
     }
 	memcpy(buf + 0x1fc, "NSIH", 4);     // signature
 }
 
 static int checkBootloaderHeader(uint8 *buf, unsigned readSize,
-        int isArtik, int isVerbose, int fixSize)
+        int isArtik, int isVerbose, int fixSize, int bootMethod)
 {
+	static const char bootMethods[][6] = {
+		"USB", "SPI", "NAND", "SDMMC", "SDFS"
+	};
     unsigned size;
     int res = !fixSize;
     unsigned headerSize, sizeOffset, loadAddrOffset, launchAddrOffset;
@@ -89,6 +95,8 @@ static int checkBootloaderHeader(uint8 *buf, unsigned readSize,
             size = read32LE(buf + sizeOffset);
             if( fixSize )
                 write32LE(buf + sizeOffset, readSize - headerSize);
+			if( bootMethod >= 0 )
+				buf[0x57] = bootMethod;
             if( isVerbose ) {
                 printf("Boot Header:\n");
                 printf("  size:           %u ", size);
@@ -102,6 +110,9 @@ static int checkBootloaderHeader(uint8 *buf, unsigned readSize,
                         read32LE(buf + loadAddrOffset));
                 printf("  launch address: 0x%x\n",
                         read32LE(buf + launchAddrOffset));
+				bootMethod = ((unsigned char*)buf)[0x57];
+				printf("  boot method:    %d (%s)\n", bootMethod,
+					bootMethod < 5 ? bootMethods[bootMethod] : "unknown");
                 printf("  signature:      OK\n");
             }else{
                 if( !fixSize && size != readSize - headerSize ) {
@@ -222,7 +233,7 @@ static int outTofile(const char *fname, const unsigned char *data, unsigned size
     }
     if( fp != stdout )
         fclose(fp);
-    return size == 0;
+    return size != 0;
 }
 
 static void usage(void)
@@ -232,6 +243,7 @@ static void usage(void)
 "\n"
 "options:\n"
 "  -A - Boot Header format for Samsung ARTIK boot loader\n"
+"  -b <num> - write the value at \"boot method\" offset (0x57) in NSIH header\n"
 "  -c - dry run (implies -v)\n"
 "  -f - fix load size in Boot Header\n"
 "  -h - print this help\n"
@@ -250,7 +262,7 @@ int main(int argc, char *argv[])
 {
 	int offset, size, opt;
     int is64bitBoot = 0, isInPlace = 0, dryRun = 0, isVerbose = 0, fixSize = 0;
-    int isArtik = 0;
+    int isArtik = 0, bootMethod = -1;
 	unsigned int load_addr;
 	unsigned int launch_addr;
     const char *infile = NULL, *outfile = NULL;
@@ -259,11 +271,14 @@ int main(int argc, char *argv[])
         usage();
         return 0;
     }
-    while( (opt = getopt(argc, argv, "Acfhio:vx")) > 0 ) {
+    while( (opt = getopt(argc, argv, "Ab:cfhio:vx")) > 0 ) {
         switch( opt ) {
             case 'A':
                 isArtik = 1;
                 break;
+			case 'b':
+				bootMethod = strtoul(optarg, NULL, 0);
+				break;
             case 'c':
                 dryRun = 1;
                 isVerbose = 1;
@@ -290,6 +305,10 @@ int main(int argc, char *argv[])
                 return 1;
         }
     }
+	if( isArtik && bootMethod >= 0 ) {
+		printf("warning: set of bootMethod is unsupported on Artik header\n");
+		bootMethod = -1;
+	}
     if( argc == optind ) {
         printf("error: input file not provided\n");
         return 1;
@@ -320,7 +339,7 @@ int main(int argc, char *argv[])
         if( argc > optind )
             launch_addr = strtoul(argv[optind], NULL, 16);
         initBootloaderHeader(mem, is64bitBoot, isArtik, size,
-                load_addr, launch_addr);
+                load_addr, launch_addr, bootMethod);
         if( isVerbose ) {
             printf("%s Boot Header: load=0x%x, launch=0x%x size=%u%s\n",
                     isInPlace ? "Embedded" : "Added", load_addr, launch_addr,
@@ -329,7 +348,8 @@ int main(int argc, char *argv[])
         size += offset;
         offset = 0;
     }else{
-        if( ! checkBootloaderHeader(mem, size, isArtik, isVerbose, fixSize) )
+        if( ! checkBootloaderHeader(mem, size, isArtik, isVerbose, fixSize,
+					bootMethod) )
             return 1;
     }
     if( dryRun )
