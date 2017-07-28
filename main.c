@@ -132,7 +132,8 @@ static int checkBootloaderHeader(uint8 *buf, unsigned readSize,
     return res;
 }
 
-static int readBin(uint8 *buf, unsigned bufsize, const char *filepath)
+static int readBin(uint8 *buf, unsigned bufsize, const char *filepath,
+		int isEnv)
 {
 	FILE *fin;
 	int size;
@@ -154,7 +155,8 @@ static int readBin(uint8 *buf, unsigned bufsize, const char *filepath)
         fprintf(stderr, "fread: %s\n", strerror(errno));
 		return size;
     }
-
+	if( isEnv && (unsigned)size < bufsize )
+		buf[size++] = '\0';
 	// Size must be a multiple of 16 bytes
 	if (size % 16 != 0)
 		size = ((size / 16) + 1) * 16;
@@ -245,6 +247,7 @@ static void usage(void)
 "  -A - Boot Header format for Samsung ARTIK boot loader\n"
 "  -b <num> - write the value at \"boot method\" offset (0x57) in NSIH header\n"
 "  -c - dry run (implies -v)\n"
+"  -e - pad data with at least one '\\0' byte (for env to import)\n"
 "  -f - fix load size in Boot Header\n"
 "  -h - print this help\n"
 "  -i - embed Boot Header in first 512 bytes read\n"
@@ -262,7 +265,7 @@ int main(int argc, char *argv[])
 {
 	int offset, size, opt;
     int is64bitBoot = 0, isInPlace = 0, dryRun = 0, isVerbose = 0, fixSize = 0;
-    int isArtik = 0, bootMethod = -1;
+    int isArtik = 0, bootMethod = -1, isEnv = 0;
 	unsigned int load_addr;
 	unsigned int launch_addr;
     const char *infile = NULL, *outfile = NULL;
@@ -271,7 +274,7 @@ int main(int argc, char *argv[])
         usage();
         return 0;
     }
-    while( (opt = getopt(argc, argv, "Ab:cfhio:vx")) > 0 ) {
+    while( (opt = getopt(argc, argv, "Ab:cefhio:vx")) > 0 ) {
         switch( opt ) {
             case 'A':
                 isArtik = 1;
@@ -282,6 +285,9 @@ int main(int argc, char *argv[])
             case 'c':
                 dryRun = 1;
                 isVerbose = 1;
+                break;
+            case 'e':
+                isEnv = 1;
                 break;
             case 'f':
                 fixSize = 1;
@@ -319,7 +325,7 @@ int main(int argc, char *argv[])
     else
         offset = isArtik ? 0x400 : 0x200;
     if( isInPlace ) {
-        size = readBin(mem, sizeof(mem), argv[optind]);
+        size = readBin(mem, sizeof(mem), argv[optind], isEnv);
         if( size < 0 )
             return 1;
         if( size < offset ) {
@@ -329,7 +335,7 @@ int main(int argc, char *argv[])
         size -= offset;
     }else{
         memset(mem, 0, offset);
-        size = readBin(mem + offset, sizeof(mem) - offset, infile);
+        size = readBin(mem + offset, sizeof(mem) - offset, infile, isEnv);
         if( size < 0 )
             return 1;
     }
