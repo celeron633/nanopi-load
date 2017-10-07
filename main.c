@@ -27,7 +27,7 @@ static unsigned read32LE(const uint8 *addr)
 }
 
 static void initBootloaderHeader(uint8 *buf, int is64bitBoot,
-        int isArtik, unsigned size, unsigned loadAddr, unsigned launchAddr,
+        unsigned size, unsigned loadAddr, unsigned launchAddr,
 		int bootMethod)
 {
     static const unsigned arm64bootcode[15] = {
@@ -55,22 +55,16 @@ static void initBootloaderHeader(uint8 *buf, int is64bitBoot,
         write32LE(buf + 4 * i, launchAddr >> 2);
         launchAddr = loadAddr;  // launch the CPU reset
     }
-    if( isArtik ) {
-        write32LE(buf + 0x50, size);        // load size
-        write32LE(buf + 0x58, loadAddr);    // load address
-        write32LE(buf + 0x60, launchAddr);  // launch address
-    }else{
-        write32LE(buf + 0x44, size);        // load size
-        write32LE(buf + 0x48, loadAddr);    // load address
-        write32LE(buf + 0x4c, launchAddr);  // launch address
-		if( bootMethod >= 0 )
-			buf[0x57] = bootMethod;
-    }
+	write32LE(buf + 0x44, size);        // load size
+	write32LE(buf + 0x48, loadAddr);    // load address
+	write32LE(buf + 0x4c, launchAddr);  // launch address
+	if( bootMethod >= 0 )
+		buf[0x57] = bootMethod;
 	memcpy(buf + 0x1fc, "NSIH", 4);     // signature
 }
 
 static int checkBootloaderHeader(uint8 *buf, unsigned readSize,
-        int isArtik, int isVerbose, int fixSize, int bootMethod)
+        int isVerbose, int fixSize, int bootMethod)
 {
 	static const char bootMethods[][6] = {
 		"USB", "SPI", "NAND", "SDMMC", "SDFS"
@@ -79,17 +73,10 @@ static int checkBootloaderHeader(uint8 *buf, unsigned readSize,
     int res = !fixSize;
     unsigned headerSize, sizeOffset, loadAddrOffset, launchAddrOffset;
 
-    if( isArtik ) {
-        headerSize = 1024;
-        sizeOffset = 0x50;
-        loadAddrOffset = 0x58;
-        launchAddrOffset = 0x60;
-    }else{
-        headerSize = 512;
-        sizeOffset = 0x44;
-        loadAddrOffset = 0x48;
-        launchAddrOffset = 0x4c;
-    }
+	headerSize = 512;
+	sizeOffset = 0x44;
+	loadAddrOffset = 0x48;
+	launchAddrOffset = 0x4c;
     if( readSize >= headerSize ) {
         if( !memcmp(buf + 0x1fc, "NSIH", 4) ) {
             size = read32LE(buf + sizeOffset);
@@ -244,13 +231,11 @@ static void usage(void)
 "usage: nanopi-load [options...] <bootloader.bin> [<loadaddr> [<startaddr>]]\n"
 "\n"
 "options:\n"
-"  -A - Boot Header format for Samsung ARTIK boot loader\n"
 "  -b <num> - write the value at \"boot method\" offset (0x57) in NSIH header\n"
 "  -c - dry run (implies -v)\n"
 "  -e - pad data with at least one '\\0' byte (for env to import)\n"
 "  -f - fix load size in Boot Header\n"
 "  -h - print this help\n"
-"  -i - embed Boot Header in first 512 bytes read\n"
 "  -o <file> - output result to file instead of upload\n"
 "  -v - be verbose\n"
 "  -x - add code for iROMBOOT to Boot Header that switches to 64-bit\n"
@@ -264,8 +249,8 @@ static void usage(void)
 int main(int argc, char *argv[])
 {
 	int offset, size, opt;
-    int is64bitBoot = 0, isInPlace = 0, dryRun = 0, isVerbose = 0, fixSize = 0;
-    int isArtik = 0, bootMethod = -1, isEnv = 0;
+    int is64bitBoot = 0, dryRun = 0, isVerbose = 0, fixSize = 0;
+    int bootMethod = -1, isEnv = 0;
 	unsigned int load_addr;
 	unsigned int launch_addr;
     const char *infile = NULL, *outfile = NULL;
@@ -274,11 +259,8 @@ int main(int argc, char *argv[])
         usage();
         return 0;
     }
-    while( (opt = getopt(argc, argv, "Ab:cefhio:vx")) > 0 ) {
+    while( (opt = getopt(argc, argv, "b:cefho:vx")) > 0 ) {
         switch( opt ) {
-            case 'A':
-                isArtik = 1;
-                break;
 			case 'b':
 				bootMethod = strtoul(optarg, NULL, 0);
 				break;
@@ -295,9 +277,6 @@ int main(int argc, char *argv[])
             case 'h':
                 usage();
                 return 0;
-            case 'i':
-                isInPlace = 1;
-                break;
             case 'o':
                 outfile = optarg;
                 break;
@@ -311,50 +290,31 @@ int main(int argc, char *argv[])
                 return 1;
         }
     }
-	if( isArtik && bootMethod >= 0 ) {
-		printf("warning: set of bootMethod is unsupported on Artik header\n");
-		bootMethod = -1;
-	}
     if( argc == optind ) {
         printf("error: input file not provided\n");
         return 1;
     }
     infile = argv[optind++];
-    if( argc == optind )
-        offset = 0;
-    else
-        offset = isArtik ? 0x400 : 0x200;
-    if( isInPlace ) {
-        size = readBin(mem, sizeof(mem), argv[optind], isEnv);
-        if( size < 0 )
-            return 1;
-        if( size < offset ) {
-            printf("error: input file too short\n");
-            return 1;
-        }
-        size -= offset;
-    }else{
-        memset(mem, 0, offset);
-        size = readBin(mem + offset, sizeof(mem) - offset, infile, isEnv);
-        if( size < 0 )
-            return 1;
-    }
+	offset =  argc == optind ? 0 : 0x200;
+	memset(mem, 0, offset);
+	size = readBin(mem + offset, sizeof(mem) - offset, infile, isEnv);
+	if( size < 0 )
+		return 1;
     if( argc > optind ) {
         load_addr = strtoul(argv[optind++], NULL, 16);
         launch_addr = load_addr + offset;
         if( argc > optind )
             launch_addr = strtoul(argv[optind], NULL, 16);
-        initBootloaderHeader(mem, is64bitBoot, isArtik, size,
+        initBootloaderHeader(mem, is64bitBoot, size,
                 load_addr, launch_addr, bootMethod);
         if( isVerbose ) {
-            printf("%s Boot Header: load=0x%x, launch=0x%x size=%u%s\n",
-                    isInPlace ? "Embedded" : "Added", load_addr, launch_addr,
-                    size, is64bitBoot ? " 64-bit" : "");
+            printf("Added Boot Header: load=0x%x, launch=0x%x size=%u%s\n",
+                    load_addr, launch_addr, size, is64bitBoot ? " 64-bit" : "");
         }
         size += offset;
         offset = 0;
     }else{
-        if( ! checkBootloaderHeader(mem, size, isArtik, isVerbose, fixSize,
+        if( ! checkBootloaderHeader(mem, size, isVerbose, fixSize,
 					bootMethod) )
             return 1;
     }
