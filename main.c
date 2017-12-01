@@ -7,11 +7,14 @@
 #include "s5p_usb.h"
 #include "s5p_boot.h"
 
+#define BUF_MAX (50 * 1024 * 1024)
+
+#define MIN(A, B) (((A) < (B)) ? (A) : (B))
 
 typedef unsigned char uint8;
 typedef unsigned int  uint32;
 
-static unsigned char mem[50 * 1024 * 1024];
+static unsigned char mem[BUF_MAX];
 
 static void write32LE(uint8 *addr, uint32 data)
 {
@@ -122,6 +125,7 @@ static int checkBootloaderHeader(uint8 *buf, unsigned readSize,
 static int readBin(uint8 *buf, unsigned bufsize, const char *filepath,
 		int isEnv)
 {
+	enum { BUF_PADDING = 16 };
 	FILE *fin;
 	int size;
 
@@ -144,40 +148,96 @@ static int readBin(uint8 *buf, unsigned bufsize, const char *filepath,
     }
 	if( isEnv && (unsigned)size < bufsize )
 		buf[size++] = '\0';
-	// Size must be a multiple of 16 bytes
-	if (size % 16 != 0)
-		size = ((size / 16) + 1) * 16;
+    // Pad size to be a multiple of BUF_PADDING bytes
+	if( BUF_PADDING > 1 )
+		size = ((size - 1) | (BUF_PADDING - 1)) + 1;
 	return size;
+}
+
+static int hotplug_callback_attach(libusb_context *ctx,
+        libusb_device *dev, libusb_hotplug_event event, void *user_data)
+{
+    (void)ctx; // unused
+    (void)event; // unused
+
+    libusb_device_handle **dev_handle_ptr = user_data;
+    int ret;
+
+    ret = libusb_open(dev, dev_handle_ptr);
+    if( LIBUSB_SUCCESS != ret ) {
+        fprintf(stderr, "libusb_open: %s\n", libusb_strerror(ret));
+        return 0;
+    }
+
+    return 1;
+}
+
+static int device_open(libusb_context *ctx,
+		libusb_device_handle **dev_handle_ptr, int isVerbose)
+{
+    libusb_hotplug_callback_handle hp;
+    int ret;
+
+	if( isVerbose )
+		printf("Waiting for device to be available...\n");
+
+	ret = libusb_hotplug_register_callback(ctx,
+			LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED, LIBUSB_HOTPLUG_ENUMERATE,
+			S5P6818_VID, S5P6818_PID, LIBUSB_HOTPLUG_MATCH_ANY,
+			hotplug_callback_attach, (void *)dev_handle_ptr, &hp);
+
+    if( LIBUSB_SUCCESS != ret ) {
+        fprintf(stderr, "libusb_hotplug_register_callback: %s\n",
+				libusb_strerror(ret));
+        return ret;
+    }
+
+    while( NULL == *dev_handle_ptr ) {
+        ret = libusb_handle_events(ctx);
+        if( LIBUSB_SUCCESS != ret ) {
+            fprintf(stderr, "libusb_handle_events: %s\n", libusb_strerror(ret));
+        }
+    }
+
+	if( isVerbose )
+		printf("Device opened.\n");
+    libusb_hotplug_deregister_callback(ctx, hp);
+
+    return LIBUSB_SUCCESS;
 }
 
 static int usbBoot(uint8 *buf, int size, int isVerbose)
 {
+	enum { TRANSFER_CHUNK = 1024 * 1024, TRANSFER_TIMEOUT_MS = 10000 };
 	libusb_context        *ctx;
-	libusb_device_handle  *dev_handle;
+	libusb_device_handle  *dev_handle = NULL;
 
 	int ret, boot_ret = 1;
 	int transferred, remain;
 
 	ret = libusb_init(&ctx);
-	if(ret < 0) {
+	if( LIBUSB_SUCCESS != ret ) {
         fprintf(stderr, "libusb_init: %s\n", libusb_strerror(ret));
 		return 1;
     }
-	dev_handle = libusb_open_device_with_vid_pid(ctx, S5P6818_VID, S5P6818_PID);
-	if(dev_handle != NULL) {
-        if((ret = libusb_claim_interface(dev_handle, S5P6818_INTERFACE)) == 0) {
+
+    ret = device_open(ctx, &dev_handle, isVerbose);
+    if( LIBUSB_SUCCESS == ret ) {
+        ret = libusb_claim_interface(dev_handle, S5P6818_INTERFACE);
+        if( LIBUSB_SUCCESS == ret ) {
             if( isVerbose )
                 printf("Start transfer, size=%d\n", size);
             remain = size;
             while( remain > 0 ) {
                 ret = libusb_bulk_transfer(dev_handle, S5P6818_EP_OUT, buf,
-                        remain > 1048576 ? 1048576 : remain, &transferred, 0);
-                if( ret < 0 )
+                        MIN(remain, TRANSFER_CHUNK), &transferred,
+						TRANSFER_TIMEOUT_MS);
+                if( LIBUSB_SUCCESS != ret )
                     break;
                 buf += transferred;
                 remain -= transferred;
             }
-            if (ret >= 0) {
+            if( LIBUSB_SUCCESS == ret ) {
                 if( isVerbose )
                     printf("Finish transfer, transferred=%d\n", size);
                 boot_ret = 0;
@@ -191,7 +251,7 @@ static int usbBoot(uint8 *buf, int size, int isVerbose)
                     libusb_strerror(ret));
         }
     }else{
-        fprintf(stderr, "failed to open device\n");
+        fprintf(stderr, "device_open failed: %s\n", libusb_strerror(ret));
     }
 	libusb_close(dev_handle);
 	libusb_exit(ctx);
